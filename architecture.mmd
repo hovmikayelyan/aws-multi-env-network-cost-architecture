@@ -1,0 +1,59 @@
+flowchart TB
+  users([Internet users]) --> cf[CloudFront + AWS WAF + Shield]
+  cf --> alb
+
+  subgraph org[AWS Organization - SCPs, Control Tower, IAM Identity Center]
+    subgraph sec[Security OU]
+      logs[(Log Archive acct<br/>CloudTrail, Flow Logs, ALB logs, CUR)]
+      audit[Audit acct<br/>GuardDuty, Security Hub]
+    end
+
+    subgraph net[Network account - Infrastructure OU]
+      tgw{{Transit Gateway<br/>route tables: prod / nonprod / shared}}
+      egress[Egress VPC<br/>NAT GW + Network Firewall]
+      r53[Route 53 Resolver<br/>+ private hosted zones]
+    end
+
+    subgraph shared[Shared Services acct]
+      ecr[ECR, CI runners, Observability<br/>Prometheus / Grafana / OTel collector]
+    end
+
+    subgraph prod[Prod account - VPC 10.30.0.0/16, 3 AZs]
+      alb[Public ALB L7<br/>host/path routing, TLS]
+      nlbp[Internal NLB L4<br/>VM services + PrivateLink endpoint service]
+      eks[EKS - microservices<br/>AWS LB Controller, IP targets]
+      vms[EC2 ASG - VM services]
+      iab[Internal ALB L7<br/>service-to-service]
+      db[(RDS Multi-AZ / DynamoDB)]
+      mq[(SQS / SNS)]
+      vpce[VPC endpoints<br/>S3, DynamoDB gateway<br/>ECR, SQS, SNS, Secrets, Logs interface]
+      alb --> eks
+      eks <--> iab
+      iab --> vms
+      nlbp --> vms
+      eks --> vpce
+      vms --> vpce
+      eks --> db
+      vms --> db
+      vpce -.PrivateLink.-> mq
+    end
+
+    subgraph stg[Staging account - 10.20.0.0/16]
+      stgapp[Same layout, smaller<br/>1 NAT, Spot nodes]
+    end
+    subgraph dev[Dev account - 10.10.0.0/16]
+      devapp[Same layout, minimal<br/>1 AZ NAT, Spot, scheduled off-hours]
+    end
+  end
+
+  prod <-->|TGW attachment| tgw
+  stg <-->|TGW attachment| tgw
+  dev <-->|TGW attachment| tgw
+  shared <-->|TGW attachment| tgw
+  tgw --> egress --> inet([Internet / SaaS])
+  stgapp -. no route to prod .- prod
+  devapp -. no route to prod .- prod
+
+  prod -- VPC Flow Logs, ALB logs --> logs
+  tgw -- TGW Flow Logs --> logs
+  logs --> cur["Cost and Usage Report 2.0 → S3 → Athena → QuickSight<br/>Budgets, Cost Anomaly Detection"]
